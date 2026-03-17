@@ -1,3 +1,16 @@
+/*
+ * ╔═══════════════════════════════════════════════════════╗
+ * ║          Happiness — IoT Sensor Station               ║
+ * ║                                                       ║
+ * ║  Reads office environment data from 6 sensors and     ║
+ * ║  POSTs JSON to the Happiness API every N seconds.     ║
+ * ╚═══════════════════════════════════════════════════════╝
+ *
+ * Board:    Arduino Uno / Nano
+ * WiFi:     ESP8266 (AT firmware) via SoftwareSerial
+ * Protocol: HTTP POST → /api/measurements
+ */
+
 #include <ArduinoJson.h>
 #include <SoftwareSerial.h>
 #include <Wire.h>
@@ -6,229 +19,320 @@
 #include <BH1750.h>
 #include <Adafruit_BME280.h>
 
-/*
- * Happiness IoT Sensor Station
- * Reads environment data and POSTs to the Happiness API.
- */
+// ─────────────────────────────────────────────────────────
+//  PIN DEFINITIONS
+// ─────────────────────────────────────────────────────────
+//
+//  Arduino Uno/Nano pinout:
+//
+//        ┌──────────────────┐
+//   D0   │ TX           VIN │
+//   D1   │ RX           GND │
+//   D2 ──│ DHT22 DATA   RST │
+//   D3   │              5V  │
+//   D4 ──│ ESP RX       A7  │
+//   D5 ──│ ESP TX       A6  │
+//   D6   │              A5 ─│── BH1750 SCL / BME280 SCL
+//   D7   │              A4 ─│── BH1750 SDA / BME280 SDA
+//   D8 ──│ DUST SENSOR  A3  │
+//   D9   │              A2 ─│── MIC (analog)
+//   D10──│ BME CS       A1  │
+//   D11──│ BME MOSI     A0 ─│── MQ GAS (analog)
+//   D12──│ BME MISO    AREF │
+//   D13──│ BME SCK      GND │
+//        └──────────────────┘
 
-// --- Pin definitions ---
-#define PIN_D_TEMP_N_HUM 2
-#define BME_SCK 13
-#define BME_MISO 12
-#define BME_MOSI 11
-#define BME_CS 10
-#define PIN_A_GAS 0
-#define PIN_A_VOLUME A2
+#define PIN_DHT         2       // DHT22 data pin
+#define PIN_ESP_RX      4       // Wire to ESP8266 TX
+#define PIN_ESP_TX      5       // Wire to ESP8266 RX
+#define PIN_DUST        8       // Dust sensor digital
+#define PIN_BME_CS      10      // BME280 SPI chip select
+#define PIN_BME_MOSI    11      // BME280 SPI MOSI
+#define PIN_BME_MISO    12      // BME280 SPI MISO
+#define PIN_BME_SCK     13      // BME280 SPI clock
+#define PIN_GAS         A0      // MQ gas sensor analog
+#define PIN_MIC         A2      // Microphone analog
 
-#define TEAM_NAME "Heisenberg"
-#define DHTTYPE DHT22
+#define DHTTYPE         DHT22
+#define TEAM_NAME       "Heisenberg"
 
-// --- Configuration (edit these) ---
-String AP = "";       // WiFi SSID
-String PASS = "";     // WiFi password
-String HOST = "";     // API host, e.g. "192.168.1.100"
-String PORT = "3030"; // API port
-int idHomebase = 1;
+// ─────────────────────────────────────────────────────────
+//  CONFIGURATION — edit these for your setup
+// ─────────────────────────────────────────────────────────
 
-// --- Sensor variables ---
-float humidityValue;
-float temperatureValue;
-float dustValue;
-long soundMeter;
-float digitalTemp;
-float digitalHumidity;
-float digitalPressure;
+const char* WIFI_SSID = "";          // Your WiFi network name
+const char* WIFI_PASS = "";          // Your WiFi password
+const char* API_HOST  = "";          // API server IP, e.g. "192.168.1.42"
+const int   API_PORT  = 3030;        // API server port
+const int   HOMEBASE_ID = 1;         // Which homebase this station belongs to
+const unsigned long READ_INTERVAL_MS = 5000;  // How often to read & send (ms)
 
-int pinDust = 8;
-unsigned long duration;
-unsigned long starttime;
-unsigned long sampletime_ms = 1000;
-unsigned long lowpulseoccupancy = 0;
-float ratio = 0;
-float concentration = 0;
+// ─────────────────────────────────────────────────────────
+//  PERIPHERALS
+// ─────────────────────────────────────────────────────────
 
-int smokeAnalogSensor = A0;
-int sensorThres = 400;
-
-const byte rxPin = 4;
-const byte txPin = 5;
-
-int countTrueCommand;
-int countTimeCommand;
-boolean found = false;
-
-// --- Peripherals ---
-SoftwareSerial ESP8266(rxPin, txPin);
-DHT dht(PIN_D_TEMP_N_HUM, DHTTYPE);
+SoftwareSerial esp(PIN_ESP_RX, PIN_ESP_TX);
+DHT dht(PIN_DHT, DHTTYPE);
 BH1750 lightMeter;
-Adafruit_BME280 bme(BME_CS, BME_MOSI, BME_MISO, BME_SCK);
+Adafruit_BME280 bme(PIN_BME_CS, PIN_BME_MOSI, PIN_BME_MISO, PIN_BME_SCK);
+
+// ─────────────────────────────────────────────────────────
+//  STATE
+// ─────────────────────────────────────────────────────────
+
+// Dust sensor sampling
+unsigned long dustSampleStart = 0;
+unsigned long dustLowPulse = 0;
+const unsigned long DUST_SAMPLE_MS = 1000;
+
+// Sound averaging
+const int SOUND_SAMPLES = 32;
+
+// ESP8266 AT command tracking
+int cmdSuccessCount = 0;
+bool wifiConnected = false;
+
+// ─────────────────────────────────────────────────────────
+//  SETUP
+// ─────────────────────────────────────────────────────────
 
 void setup()
 {
   Serial.begin(9600);
-  ESP8266.begin(9600);
-  dht.begin();
-  lightMeter.begin();
+  esp.begin(9600);
 
-  Serial.print("Starting Codename Happiness for ");
+  Serial.println(F(""));
+  Serial.println(F("╔═══════════════════════════════════╗"));
+  Serial.println(F("║   Happiness Sensor Station v2.0   ║"));
+  Serial.println(F("╚═══════════════════════════════════╝"));
+  Serial.print(F("Team: "));
   Serial.println(TEAM_NAME);
+  Serial.println(F(""));
 
-  pinMode(pinDust, INPUT);
-  starttime = millis();
-  pinMode(smokeAnalogSensor, INPUT);
+  // Init sensors
+  dht.begin();
+  Serial.println(F("[OK] DHT22 initialized"));
 
-  if (!bme.begin())
-  {
-    Serial.println("Could not find a valid BME280 sensor, check wiring!");
-  }
-
-  sendCommand("AT", 5, "OK");
-  sendCommand("AT+CWMODE=1", 5, "OK");
-  sendCommand("AT+CWJAP=\"" + AP + "\",\"" + PASS + "\"", 20, "OK");
-}
-
-void sendCommand(String command, int maxTime, char readReplay[])
-{
-  Serial.print(countTrueCommand);
-  Serial.print(". at command => ");
-  Serial.print(command);
-  Serial.print(" ");
-
-  while (countTimeCommand < (maxTime * 1))
-  {
-    ESP8266.println(command);
-    if (ESP8266.find(readReplay))
-    {
-      found = true;
-      break;
-    }
-    countTimeCommand++;
-  }
-
-  if (found == true)
-  {
-    Serial.println("OK");
-    countTrueCommand++;
-    countTimeCommand = 0;
-  }
+  if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE))
+    Serial.println(F("[OK] BH1750 light sensor initialized"));
   else
+    Serial.println(F("[!!] BH1750 not found — check I2C wiring"));
+
+  if (bme.begin())
+    Serial.println(F("[OK] BME280 initialized"));
+  else
+    Serial.println(F("[!!] BME280 not found — check SPI wiring"));
+
+  pinMode(PIN_DUST, INPUT);
+  pinMode(PIN_GAS, INPUT);
+  pinMode(PIN_MIC, INPUT);
+  dustSampleStart = millis();
+
+  Serial.println(F("[OK] Analog sensors ready"));
+  Serial.println(F(""));
+
+  // Connect WiFi
+  Serial.println(F("Connecting to WiFi..."));
+  wifiConnected = sendAT("AT", 5, "OK");
+  sendAT("AT+CWMODE=1", 5, "OK");
+
+  String joinCmd = "AT+CWJAP=\"";
+  joinCmd += WIFI_SSID;
+  joinCmd += "\",\"";
+  joinCmd += WIFI_PASS;
+  joinCmd += "\"";
+  wifiConnected = sendAT(joinCmd, 20, "OK");
+
+  if (wifiConnected)
+    Serial.println(F("[OK] WiFi connected"));
+  else
+    Serial.println(F("[!!] WiFi connection failed — will retry on send"));
+
+  Serial.println(F(""));
+  Serial.println(F("Starting sensor loop..."));
+  Serial.println(F("─────────────────────────────────────"));
+}
+
+// ─────────────────────────────────────────────────────────
+//  AT COMMAND HELPER
+// ─────────────────────────────────────────────────────────
+
+bool sendAT(String command, int timeoutSec, const char* expected)
+{
+  Serial.print(F("  AT> "));
+  Serial.print(command.substring(0, 40)); // Truncate passwords in log
+
+  for (int attempt = 0; attempt < timeoutSec; attempt++)
   {
-    Serial.println("FAIL");
-    countTrueCommand = 0;
-    countTimeCommand = 0;
+    esp.println(command);
+    if (esp.find((char*)expected))
+    {
+      Serial.println(F(" ✓"));
+      cmdSuccessCount++;
+      return true;
+    }
   }
 
-  found = false;
+  Serial.println(F(" ✗"));
+  return false;
 }
 
-// --- Sensor readers ---
+// ─────────────────────────────────────────────────────────
+//  SENSOR READERS
+// ─────────────────────────────────────────────────────────
 
-float readHumidityDH11()
+float readTemperature()
 {
-  humidityValue = dht.readHumidity();
-  return float(humidityValue);
-}
-
-float readTemperatureDH11()
-{
-  temperatureValue = dht.readTemperature();
-  return float(temperatureValue);
-}
-
-float readDigitalTemperature()
-{
-  return float(bme.readTemperature());
-}
-
-float readDigitalHumidity()
-{
-  return float(bme.readHumidity());
-}
-
-float readDigitalPressure()
-{
-  return float(bme.readPressure());
-}
-
-float gasDetection()
-{
-  return float(analogRead(smokeAnalogSensor));
-}
-
-float soundLevelDetection()
-{
-  soundMeter = 0;
-  for (byte i = 0; i < 32; i++)
+  float val = dht.readTemperature();
+  if (isnan(val))
   {
-    soundMeter += analogRead(PIN_A_VOLUME);
+    Serial.println(F("  [warn] DHT22 temp read failed, using BME280"));
+    return bme.readTemperature();
   }
-  soundMeter >>= 5;
-  soundMeter = 20 * log10(analogRead(soundMeter));
-  return float(soundMeter);
+  return val;
 }
 
-float lightIntensity()
+float readHumidity()
 {
-  return float(lightMeter.readLightLevel());
-}
-
-float dustLevelDetection()
-{
-  duration = pulseIn(pinDust, LOW);
-  lowpulseoccupancy = lowpulseoccupancy + duration;
-  if ((millis() - starttime) >= sampletime_ms)
+  float val = dht.readHumidity();
+  if (isnan(val))
   {
-    ratio = lowpulseoccupancy / (sampletime_ms * 10.0);
-    concentration = 1.1 * pow(ratio, 3) - 3.8 * pow(ratio, 2) + 520 * ratio + 0.62;
-    lowpulseoccupancy = 0;
-    starttime = millis();
-    return float(concentration);
+    Serial.println(F("  [warn] DHT22 humidity read failed, using BME280"));
+    return bme.readHumidity();
   }
-  return 0;
+  return val;
 }
 
-// --- Main loop ---
+float readPressure()
+{
+  // BME280 returns Pa, convert to hPa
+  return bme.readPressure() / 100.0F;
+}
+
+float readLight()
+{
+  float lux = lightMeter.readLightLevel();
+  // BH1750 returns -1 or -2 on error
+  return (lux < 0) ? 0.0 : lux;
+}
+
+float readGas()
+{
+  return (float)analogRead(PIN_GAS);
+}
+
+float readVolume()
+{
+  // Average multiple samples for stability
+  long total = 0;
+  for (int i = 0; i < SOUND_SAMPLES; i++)
+  {
+    total += analogRead(PIN_MIC);
+  }
+  float avg = (float)total / SOUND_SAMPLES;
+
+  // Convert to approximate dB (rough analog mic calibration)
+  if (avg <= 0) return 0;
+  return 20.0 * log10(avg);
+}
+
+float readDust()
+{
+  unsigned long dur = pulseIn(PIN_DUST, LOW, 100000); // 100ms timeout
+  dustLowPulse += dur;
+
+  if ((millis() - dustSampleStart) >= DUST_SAMPLE_MS)
+  {
+    float ratio = dustLowPulse / (DUST_SAMPLE_MS * 10.0);
+    float conc = 1.1 * pow(ratio, 3) - 3.8 * pow(ratio, 2) + 520 * ratio + 0.62;
+    dustLowPulse = 0;
+    dustSampleStart = millis();
+    return max(conc, 0.0f); // Never return negative
+  }
+  return -1; // Sample not ready yet
+}
+
+// ─────────────────────────────────────────────────────────
+//  HTTP POST
+// ─────────────────────────────────────────────────────────
+
+bool postMeasurement(const char* json, int len)
+{
+  String host = API_HOST;
+  String port = String(API_PORT);
+
+  // Open TCP connection
+  if (!sendAT("AT+CIPMUX=1", 5, "OK")) return false;
+  if (!sendAT("AT+CIPSTART=0,\"TCP\",\"" + host + "\"," + port, 15, "OK")) return false;
+
+  // Build HTTP request
+  String req = "POST /api/measurements HTTP/1.1\r\n";
+  req += "Host: " + host + ":" + port + "\r\n";
+  req += "Content-Type: application/json\r\n";
+  req += "Content-Length: " + String(len) + "\r\n";
+  req += "Connection: close\r\n";
+  req += "\r\n";
+  req += json;
+
+  // Send
+  if (!sendAT("AT+CIPSEND=0," + String(req.length()), 4, ">")) return false;
+
+  esp.print(req);
+  delay(1500);
+
+  bool sent = esp.find("SEND OK");
+  sendAT("AT+CIPCLOSE=0", 5, "OK");
+
+  return sent;
+}
+
+// ─────────────────────────────────────────────────────────
+//  MAIN LOOP
+// ─────────────────────────────────────────────────────────
 
 void loop()
 {
-  StaticJsonDocument<200> doc;
-  doc["homebase_id"] = idHomebase;
-  doc["temperature"] = readTemperatureDH11();
-  doc["humidity"] = readHumidityDH11();
-  doc["dust"] = dustLevelDetection();
-  doc["gas"] = gasDetection();
-  doc["volume"] = soundLevelDetection();
-  doc["light"] = lightIntensity();
-  doc["pressure"] = readDigitalPressure();
+  // Read all sensors
+  float temp     = readTemperature();
+  float humidity  = readHumidity();
+  float dust     = readDust();
+  float gas      = readGas();
+  float volume   = readVolume();
+  float light    = readLight();
+  float pressure = readPressure();
 
-  char body[200];
-  int bodyLen = serializeJson(doc, body);
+  // Skip if dust sample isn't ready
+  if (dust < 0) dust = 0;
 
-  Serial.println(body);
+  // Build JSON payload
+  StaticJsonDocument<256> doc;
+  doc["homebase_id"] = HOMEBASE_ID;
+  doc["temperature"] = round(temp * 10) / 10.0;
+  doc["humidity"]    = round(humidity * 10) / 10.0;
+  doc["dust"]        = round(dust * 10) / 10.0;
+  doc["gas"]         = round(gas * 10) / 10.0;
+  doc["volume"]      = round(volume * 10) / 10.0;
+  doc["light"]       = round(light * 10) / 10.0;
+  doc["pressure"]    = round(pressure * 10) / 10.0;
 
-  // POST /api/measurements
-  String postRequest =
-      "POST /api/measurements HTTP/1.1\r\n"
-      "Host: " +
-      HOST + ":" + PORT + "\r\n" +
-      "Content-Type: application/json\r\n" +
-      "Content-Length: " + String(bodyLen) + "\r\n" +
-      "\r\n" + String(body);
+  char body[256];
+  int bodyLen = serializeJson(doc, body, sizeof(body));
 
-  sendCommand("AT+CIPMUX=1", 5, "OK");
-  sendCommand("AT+CIPSTART=0,\"TCP\",\"" + HOST + "\"," + PORT, 15, "OK");
-  sendCommand("AT+CIPSEND=0," + String(postRequest.length() + 4), 4, ">");
+  // Log to serial
+  Serial.println(F(""));
+  Serial.print(F("🌡 "));  Serial.print(temp, 1);     Serial.print(F("°C  "));
+  Serial.print(F("💧 "));  Serial.print(humidity, 1);  Serial.print(F("%  "));
+  Serial.print(F("☀ "));   Serial.print(light, 0);     Serial.print(F("lux  "));
+  Serial.print(F("🔊 "));  Serial.print(volume, 1);    Serial.print(F("dB  "));
+  Serial.print(F("🌫 "));  Serial.print(dust, 0);      Serial.print(F("µg  "));
+  Serial.print(F("🔥 "));  Serial.print(gas, 0);       Serial.print(F("ppm  "));
+  Serial.print(F("⏲ "));   Serial.print(pressure, 1);  Serial.println(F("hPa"));
 
-  ESP8266.println(postRequest);
-  delay(1500);
-  countTrueCommand++;
+  // Send to API
+  if (postMeasurement(body, bodyLen))
+    Serial.println(F("  → Sent ✓"));
+  else
+    Serial.println(F("  → Send failed ✗ (will retry next cycle)"));
 
-  if (ESP8266.find("SEND OK"))
-  {
-    Serial.println("Measurement sent");
-  }
-
-  sendCommand("AT+CIPCLOSE=0", 5, "OK");
-
-  delay(5000); // Read every 5 seconds
+  delay(READ_INTERVAL_MS);
 }
