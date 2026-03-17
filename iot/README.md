@@ -15,37 +15,47 @@
 
 The sensor station reads your office environment every 5 seconds and sends the data to the Happiness API over WiFi. The dashboard then visualizes it in real time.
 
-```
-  ┌─────────────────────────────────────────────────┐
-  │              SENSOR STATION                      │
-  │                                                  │
-  │   DHT22 ──→ Temperature (°C) + Humidity (%)     │
-  │   BME280 ─→ Pressure (hPa) + backup Temp/Hum   │
-  │   BH1750 ─→ Light (lux)                         │
-  │   MQ-2 ───→ Gas / Smoke (analog 0-1023)         │
-  │   GP2Y ───→ Dust / Particulate (µg/m³)          │
-  │   Mic ────→ Sound Level (≈ dB)                   │
-  │                                                  │
-  │   ESP8266 ─→ WiFi POST to /api/measurements     │
-  └─────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+  subgraph Sensors
+    DHT22["DHT22\nTemp °C + Humidity %"]
+    BME280["BME280\nPressure hPa + backup"]
+    BH1750["BH1750\nLight lux"]
+    MQ2["MQ-2\nGas / Smoke"]
+    GP2Y["GP2Y\nDust µg/m³"]
+    Mic["Mic\nSound ≈ dB"]
+  end
+
+  subgraph MCU["Arduino + ESP8266"]
+    Read["Read & Build JSON"]
+    WiFi["WiFi POST"]
+  end
+
+  DHT22 --> Read
+  BME280 --> Read
+  BH1750 --> Read
+  MQ2 --> Read
+  GP2Y --> Read
+  Mic --> Read
+  Read --> WiFi
+  WiFi -- "POST /api/measurements" --> API["Happiness API"]
 ```
 
 ## Parts List
 
-| Part | Model | Purpose | ~Cost |
-|---|---|---|---|
-| Microcontroller | Arduino Uno / Nano | Main brain | $5–25 |
-| WiFi module | ESP8266 (ESP-01) | HTTP POST over WiFi | $2–5 |
-| Temp & humidity | DHT22 (AM2302) | Temperature + humidity | $3–8 |
-| Env sensor | BME280 (SPI) | Pressure + backup temp/hum | $3–10 |
-| Light sensor | BH1750 (I2C) | Ambient light in lux | $2–5 |
-| Gas sensor | MQ-2 / MQ-135 | Smoke / air quality | $2–5 |
-| Dust sensor | GP2Y1010AU0F | Particulate matter | $5–12 |
-| Microphone | Analog sound module | Noise level | $1–3 |
-| Misc | Breadboard, jumpers, 10kΩ resistor, USB cable | — | $5 |
+| Part            | Model                                         | Purpose                    | ~Cost |
+| --------------- | --------------------------------------------- | -------------------------- | ----- |
+| Microcontroller | Arduino Uno / Nano                            | Main brain                 | $5–25 |
+| WiFi module     | ESP8266 (ESP-01)                              | HTTP POST over WiFi        | $2–5  |
+| Temp & humidity | DHT22 (AM2302)                                | Temperature + humidity     | $3–8  |
+| Env sensor      | BME280 (SPI)                                  | Pressure + backup temp/hum | $3–10 |
+| Light sensor    | BH1750 (I2C)                                  | Ambient light in lux       | $2–5  |
+| Gas sensor      | MQ-2 / MQ-135                                 | Smoke / air quality        | $2–5  |
+| Dust sensor     | GP2Y1010AU0F                                  | Particulate matter         | $5–12 |
+| Microphone      | Analog sound module                           | Noise level                | $1–3  |
+| Misc            | Breadboard, jumpers, 10kΩ resistor, USB cable | —                          | $5    |
 
 Total: roughly $25–75 depending on where you source parts.
-
 
 ## Wiring Diagram
 
@@ -89,20 +99,20 @@ Total: roughly $25–75 depending on where you source parts.
 
 ### Pin Summary
 
-| Arduino Pin | Connected To | Protocol |
-|---|---|---|
-| D2 | DHT22 DATA | Digital (1-Wire) |
-| D4 | ESP8266 TX | SoftwareSerial RX |
-| D5 | ESP8266 RX | SoftwareSerial TX |
-| D8 | Dust sensor DATA | Digital pulse |
-| D10 | BME280 CS | SPI |
-| D11 | BME280 MOSI | SPI |
-| D12 | BME280 MISO | SPI |
-| D13 | BME280 SCK | SPI |
-| A0 | MQ-2 AOUT | Analog |
-| A2 | Mic AOUT | Analog |
-| A4 | BH1750 SDA | I2C |
-| A5 | BH1750 SCL | I2C |
+| Arduino Pin | Connected To     | Protocol          |
+| ----------- | ---------------- | ----------------- |
+| D2          | DHT22 DATA       | Digital (1-Wire)  |
+| D4          | ESP8266 TX       | SoftwareSerial RX |
+| D5          | ESP8266 RX       | SoftwareSerial TX |
+| D8          | Dust sensor DATA | Digital pulse     |
+| D10         | BME280 CS        | SPI               |
+| D11         | BME280 MOSI      | SPI               |
+| D12         | BME280 MISO      | SPI               |
+| D13         | BME280 SCK       | SPI               |
+| A0          | MQ-2 AOUT        | Analog            |
+| A2          | Mic AOUT         | Analog            |
+| A4          | BH1750 SDA       | I2C               |
+| A5          | BH1750 SCL       | I2C               |
 
 ### Important Notes
 
@@ -117,20 +127,19 @@ Total: roughly $25–75 depending on where you source parts.
 - Let the MQ-2 gas sensor warm up for ~2 minutes after power-on for accurate readings.
 - BH1750 ADDR pin to GND sets I2C address to 0x23 (default).
 
-
 ## Arduino IDE Setup
 
 ### 1. Install Libraries
 
 Open Arduino IDE → Sketch → Include Library → Manage Libraries, then install:
 
-| Library | Author | Version |
-|---|---|---|
-| ArduinoJson | Benoit Blanchon | 6.x |
-| DHT sensor library | Adafruit | latest |
-| Adafruit BME280 Library | Adafruit | latest |
-| Adafruit Unified Sensor | Adafruit | latest |
-| BH1750 | Christopher Laws | latest |
+| Library                 | Author           | Version |
+| ----------------------- | ---------------- | ------- |
+| ArduinoJson             | Benoit Blanchon  | 6.x     |
+| DHT sensor library      | Adafruit         | latest  |
+| Adafruit BME280 Library | Adafruit         | latest  |
+| Adafruit Unified Sensor | Adafruit         | latest  |
+| BH1750                  | Christopher Laws | latest  |
 
 ### 2. Configure
 
@@ -184,48 +193,37 @@ Starting sensor loop...
 
 ## Data Flow
 
-```
-  Sensors                Arduino              ESP8266              API
-    │                      │                    │                   │
-    │  analog/digital      │                    │                   │
-    ├─────────────────────→│                    │                   │
-    │                      │                    │                   │
-    │                      │  Build JSON        │                   │
-    │                      │  {                 │                   │
-    │                      │    homebase_id: 1, │                   │
-    │                      │    temperature: 23 │                   │
-    │                      │    humidity: 51,   │                   │
-    │                      │    ...             │                   │
-    │                      │  }                 │                   │
-    │                      │                    │                   │
-    │                      │  AT+CIPSEND        │                   │
-    │                      ├───────────────────→│                   │
-    │                      │                    │  POST /api/       │
-    │                      │                    │  measurements     │
-    │                      │                    ├──────────────────→│
-    │                      │                    │                   │
-    │                      │                    │  HTTP 201         │
-    │                      │                    │←──────────────────┤
-    │                      │  SEND OK           │                   │
-    │                      │←───────────────────┤                   │
-    │                      │                    │                   │
-    │                      │  delay(5000)       │                   │
-    │                      │  ... repeat ...    │                   │
+```mermaid
+sequenceDiagram
+  participant S as Sensors
+  participant A as Arduino
+  participant E as ESP8266
+  participant API as Happiness API
+
+  loop Every 5 seconds
+    S->>A: analog / digital readings
+    A->>A: Build JSON payload
+    A->>E: AT+CIPSEND (HTTP request)
+    E->>API: POST /api/measurements
+    API-->>E: HTTP 201 Created
+    E-->>A: SEND OK
+    A->>A: delay(5000)
+  end
 ```
 
 ## Troubleshooting
 
-| Problem | Fix |
-|---|---|
-| `[!!] DHT22` in serial | Check D2 wiring + 10kΩ pull-up resistor |
-| `[!!] BME280 not found` | Check SPI wiring (D10-D13), verify 5V power |
-| `[!!] BH1750 not found` | Check I2C wiring (A4/A5), ADDR pin to GND |
-| WiFi `AT` commands fail | Check ESP8266 power (3.3V!), baud rate, TX/RX swap |
-| `Send failed ✗` | Verify API is running, check HOST IP, firewall |
-| Gas readings always high | MQ-2 needs 2 min warm-up, check if sensor is in clean air |
-| Light always 0 | BH1750 may need `Wire.begin()` — already called by `.begin()` |
-| Dust always 0 | Dust sensor needs airflow, check D8 wiring |
-| Sound readings erratic | Mic module gain pot may need adjustment |
+| Problem                  | Fix                                                           |
+| ------------------------ | ------------------------------------------------------------- |
+| `[!!] DHT22` in serial   | Check D2 wiring + 10kΩ pull-up resistor                       |
+| `[!!] BME280 not found`  | Check SPI wiring (D10-D13), verify 5V power                   |
+| `[!!] BH1750 not found`  | Check I2C wiring (A4/A5), ADDR pin to GND                     |
+| WiFi `AT` commands fail  | Check ESP8266 power (3.3V!), baud rate, TX/RX swap            |
+| `Send failed ✗`          | Verify API is running, check HOST IP, firewall                |
+| Gas readings always high | MQ-2 needs 2 min warm-up, check if sensor is in clean air     |
+| Light always 0           | BH1750 may need `Wire.begin()` — already called by `.begin()` |
+| Dust always 0            | Dust sensor needs airflow, check D8 wiring                    |
+| Sound readings erratic   | Mic module gain pot may need adjustment                       |
 
 ## Testing Without Hardware
 

@@ -115,29 +115,30 @@ An Arduino sensor station collects environment data every 5 seconds and streams 
 
 ## Architecture
 
-```
-                    ┌─────────────┐
-                    │   Arduino   │
-                    │  + ESP8266  │
-                    │             │
-                    │  DHT22      │
-                    │  BME280     │
-                    │  BH1750     │     POST /api/measurements
-                    │  MQ Gas     │ ─────────────────────────────┐
-                    │  Dust       │                               │
-                    │  Mic        │                               ▼
-                    └─────────────┘                    ┌──────────────────┐
-                                                       │   Express API    │
-                                                       │   port 3030      │
-                    ┌─────────────┐                    │                  │
-                    │   Browser   │  GET /api/status   │   SQLite (WAL)   │
-                    │             │ ◄─────────────────│                  │
-                    │  Vite       │                    └──────────────────┘
-                    │  React 18   │
-                    │  Tailwind   │
-                    │  Recharts   │
-                    │             │
-                    └─────────────┘
+```mermaid
+flowchart LR
+  subgraph IoT["🔌 Arduino + ESP8266"]
+    DHT22
+    BME280
+    BH1750
+    MQ-Gas
+    Dust
+    Mic
+  end
+
+  subgraph API["⚡ Express API :3030"]
+    SQLite["SQLite (WAL)"]
+  end
+
+  subgraph Frontend["🖥 Browser"]
+    Vite
+    React-18
+    Tailwind
+    Recharts
+  end
+
+  IoT -- "POST /api/measurements" --> API
+  API -- "GET /api/status" --> Frontend
 ```
 
 ## Sensors & Scoring
@@ -215,13 +216,13 @@ happiness/
 
 The Arduino firmware in `iot/firmware.ino` reads from 6 sensors and POSTs JSON to the API every 5 seconds.
 
-Edit these lines in the firmware:
+Edit the configuration block in the firmware:
 ```cpp
-String AP = "YourWiFi";
-String PASS = "YourPassword";
-String HOST = "192.168.1.100";
-String PORT = "3030";
-int idHomebase = 1;
+const char* WIFI_SSID = "YourWiFi";
+const char* WIFI_PASS = "YourPassword";
+const char* API_HOST  = "192.168.1.100";
+const int   API_PORT  = 3030;
+const int   HOMEBASE_ID = 1;
 ```
 
 See [`iot/README.md`](iot/README.md) for full wiring and library details.
