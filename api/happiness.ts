@@ -50,10 +50,13 @@ function scoreGas(v: number | null): number {
 
 function scoreVolume(v: number | null): number {
   if (v == null) return 50
-  // Ideal: 30-50 dB
-  if (v <= 50) return 100
-  if (v <= 70) return 70
-  if (v <= 85) return 40
+  // Ideal: ~50 dB (UArizona study — both too quiet and too loud increase stress)
+  if (v >= 40 && v <= 55) return 100
+  if (v >= 30 && v < 40) return 80
+  if (v > 55 && v <= 65) return 80
+  if (v >= 20 && v < 30) return 60
+  if (v > 65 && v <= 75) return 50
+  if (v > 75 && v <= 85) return 30
   return 10
 }
 
